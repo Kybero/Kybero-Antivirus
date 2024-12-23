@@ -1,0 +1,5 @@
+[
+    {"name": "EICAR Test File", "hashes": ["275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"]},
+    {"name": "Ransom.Ako", "hashes": ["55a0094ebffeef0ece07bf1d63a91284e2399e5f4f53e4bdd2114966d0cb9bb5"]},
+    {"name": "Trojan.Cutwail", "hashes": ["006dbc90141cf989379230ee574dc1ae3bc0cf7c2da7229a3b2d7d98e9302e38"]},
+]
