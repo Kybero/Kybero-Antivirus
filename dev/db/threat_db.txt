@@ -4,4 +4,6 @@
     {"name": "Trojan.Cutwail", "hashes": ["006dbc90141cf989379230ee574dc1ae3bc0cf7c2da7229a3b2d7d98e9302e38"]},
     {"name": "Trojan.Dridex", "hashes": ["2f89db171c4449a0d6d6c4756d4695d2d7535ab77c4b60edcadeac8a5f8890e8"]},
     {"name": "Trojan.HawkEye", "hashes": ["d20844f7f82848085df63514a477428f6e2a1d358baa559e920491ac870e8dc0"]},
+    {"name": "RansomWare.Tedy", "hashes": ["abf00508b2e9d357b98df13518208e50a88523d9d721dc858ef27e5e040084fd"]},
+    {"name": "RansomWare.LockBit", "hashes": ["82d89a75d80e80e4be42c9eb79e401558c9fa3175648cd0c0467f2de1a07a908"]}
 ]
