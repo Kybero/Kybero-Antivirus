@@ -1,11 +1,17 @@
 import os
 import sys
 import subprocess
-import ssl
-import pkgutil
 import logging
 import traceback
 import json
+import psutil
+import hashlib
+import requests
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkinter import filedialog
+import threading
+from datetime import datetime, timedelta
 
 # Configure logging
 log_file = "log.txt"
@@ -19,50 +25,30 @@ class LogToFile:
         self.log = open(filename, "a")
 
     def write(self, message):
-        self.terminal.write(message)  # Also print to console
-        self.log.write(message)  # Write to log file
+        # Write to console if terminal is available
+        if self.terminal is not None:
+            self.terminal.write(message)
+
+        # Always write to the log file
+        if self.log is not None:
+            self.log.write(message)
 
     def flush(self):
-        self.terminal.flush()
-        self.log.flush()
+        # Flush both terminal and log file outputs
+        if self.terminal is not None:
+            self.terminal.flush()
+        if self.log is not None:
+            self.log.flush()
 
 # Redirect stdout and stderr to log file
 sys.stdout = LogToFile(log_file)
 sys.stderr = LogToFile(log_file)
 
-# List of required modules (skip hashlib, json, base64, tkinter since they are built-in)
-required_modules = [
-    'requests',
-    'urllib3',
-    'charset_normalizer'
-]
-
-# Function to install missing modules
-def install_module(module_name, version=None):
-    try:
-        if version:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", f"{module_name}=={version}"])
-        else:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", module_name])
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Failed to install {module_name}: {e}"
-        print(error_msg)
-        logging.error(error_msg)  # Log the error
-        handle_error(e)
-
-# Check if a module is part of the bundled PyInstaller executable
-def is_module_bundled(module_name):
-    # Check if the module can be found in the sys.modules or bundled package
-    if module_name in sys.modules:
-        return True
-    if pkgutil.find_loader(module_name) is not None:
-        return True
-    return False
-
 # Handle errors gracefully and prevent the app from closing immediately
 def handle_error(error):
     error_msg = f"An error occurred: {str(error)}"
-    print(error_msg)
+    if sys.stdout:
+        print(error_msg)
     logging.error(error_msg)  # Log the error
 
     logging.error("Full traceback:")
@@ -70,66 +56,58 @@ def handle_error(error):
 
     input("Press Enter to exit...")  # Pause before closing
 
-# Check and install missing modules
-def check_and_install_modules():
-    for module in required_modules:
-        if not is_module_bundled(module):
-            module_msg = f"Module '{module}' not found. Installing..."
-            print(module_msg)
-            logging.info(module_msg)  # Log the info
-            install_module(module)
-
-# Check and install the correct version of urllib3
-def check_urllib3_version():
-    try:
-        import urllib3
-        if urllib3.__version__ >= '2.0.0':
-            info_msg = f"urllib3 v{urllib3.__version__} found. Checking OpenSSL compatibility."
-            print(info_msg)
-            logging.info(info_msg)  # Log the info
-            openssl_version = ssl.OPENSSL_VERSION
-            if "1.1.1" not in openssl_version:
-                warning_msg = f"Warning: OpenSSL version {openssl_version} is not compatible with urllib3 v2.0+."
-                print(warning_msg)
-                logging.warning(warning_msg)  # Log the warning
-                print("Consider upgrading OpenSSL or downgrading urllib3.")
-        else:
-            info_msg = f"urllib3 v{urllib3.__version__} is compatible."
-            print(info_msg)
-            logging.info(info_msg)  # Log the info
-    except ImportError:
-        error_msg = "urllib3 is not installed. Installing a compatible version..."
-        print(error_msg)
-        logging.error(error_msg)  # Log the error
-        install_module('urllib3', '1.26.10')  # Install a compatible version
-
-# Main execution
-try:
-    # Check and install missing modules and verify compatibility
-    check_and_install_modules()
-    check_urllib3_version()
-
-except Exception as e:
-    handle_error(e)
-
-# Your other imports and code can follow here
-import hashlib
-import requests
-import tkinter as tk
-from tkinter import ttk, messagebox
-from tkinter import filedialog
-import threading  # Import threading module
-
 # Antivirus version
-KYBERO_VERSION = "prototype 0.1.0 stable"
+KYBERO_VERSION = "prototype 0.2.0 stable"
 
 # Configurations
 DB_PATH = os.path.join(os.path.dirname(__file__), 'db', 'threat_db.txt')
 GITHUB_API_URL = "https://github.com/Kybero/Kybero-Antivirus/blob/main/dev/db/threat_db.txt?raw=true"
 CLOUD_API_URL = "https://kybero-control.onrender.com/scan"  # Replace with your cloud API URL
+CACHE_FILE = os.path.join(os.path.dirname(__file__), "cache.json")
+CACHE_EXPIRATION_DAYS = 30
 
 # Quarantine directory
 QUARANTINE_DIR = os.path.join(os.path.dirname(__file__), 'quarantine')
+
+# Create the cache file immediately if it doesn't exist
+if not os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "w") as f:
+        json.dump({}, f)  # Create an empty JSON file
+        
+# Load cache from disk
+if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r") as f:
+        cache = json.load(f)
+else:
+    cache = {}
+    
+cache_file_path = os.path.abspath(CACHE_FILE)
+if sys.stdout:
+    print(f"Cache file will be established at: {cache_file_path}")
+
+# def run_in_background(script_name):
+#     # Get the full path of the component script
+#     current_dir = os.path.dirname(os.path.abspath(__file__))
+#     component_script_path = os.path.join(current_dir, script_name)
+    
+#     # Ensure the script is not run in the console window
+#     startupinfo = subprocess.STARTUPINFO()
+#     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+#     # Run the component script in the background
+#     subprocess.Popen([sys.executable, component_script_path], startupinfo=startupinfo)
+#     if sys.stdout:
+#         print("Real-time protection enabled.")
+        
+# def is_component_running(script_name):
+#     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+#         try:
+#             # Ensure cmdline is not None before accessing it
+#             if proc.info['cmdline'] and script_name in proc.info['cmdline']:
+#                 return True
+#         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+#             pass  # Ignore any processes we can't access
+#     return False
 
 # Function to check and update the local database
 def check_and_update_threat_db():
@@ -141,10 +119,12 @@ def check_and_update_threat_db():
         remote_hash = None
 
         if os.path.exists(DB_PATH):
-            print("Local database found. Comparing with remote version...")
+            if sys.stdout:
+                print("Local database found. Comparing with remote version...")
             response = requests.get(GITHUB_API_URL)
             if response.status_code != 200:
-                print(f"Failed to fetch remote database. HTTP Status Code: {response.status_code}")
+                if sys.stdout:
+                    print(f"Failed to fetch remote database. HTTP Status Code: {response.status_code}")
                 return
 
             remote_db_content = response.content
@@ -155,15 +135,19 @@ def check_and_update_threat_db():
                 local_hash = hashlib.sha256(local_db_content).hexdigest()
 
                 if local_hash == remote_hash:
-                    print("Database is up-to-date.")
+                    if sys.stdout:
+                        print("Database is up-to-date.")
                     return
                 else:
-                    print("Database differs. Updating...")
+                    if sys.stdout:
+                        print("Database differs. Updating...")
         else:
-            print("Local database not found. Downloading...")
+            if sys.stdout:
+                print("Local database not found. Downloading...")
             response = requests.get(GITHUB_API_URL)
             if response.status_code != 200:
-                print(f"Failed to fetch remote database. HTTP Status Code: {response.status_code}")
+                if sys.stdout:
+                    print(f"Failed to fetch remote database. HTTP Status Code: {response.status_code}")
                 return
 
             remote_db_content = response.content
@@ -171,10 +155,12 @@ def check_and_update_threat_db():
         # Overwrite the existing database file (or create it if not present)
         with open(DB_PATH, 'wb') as file:
             file.write(remote_db_content)
-        print("Database updated successfully.")
+        if sys.stdout:
+            print("Database updated successfully at: {DB_PATH}")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error accessing the remote database: {e}")
+        if sys.stdout:
+            print(f"Error accessing the remote database: {e}")
         raise Exception(f"Error accessing the remote database: {e}")
 
 # Load threat database (processing each line to extract relevant data)
@@ -182,67 +168,142 @@ def load_threat_db():
     global threat_db  # Ensure the function updates the global variable
     try:
         check_and_update_threat_db()
-        print("Threat database loaded successfully.")
+        if sys.stdout:
+            print("Threat database loaded successfully.")
         with open(DB_PATH, 'r') as db_file:
             # Assume the file contains JSON data
             threat_db = json.load(db_file)
-            print("Loaded threat database content.")
+            if sys.stdout:
+                print("Loaded threat database content.")
     except Exception as e:
-        print(f"Error loading threat database: {e}")
+        if sys.stdout:
+            print(f"Error loading threat database: {e}")
     return threat_db
+
+# Save cache to disk
+def save_cache():
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f)
+
+# Remove expired cache entries
+def clean_expired_cache():
+    now = datetime.now()
+    expiration_date = now - timedelta(days=CACHE_EXPIRATION_DAYS)
+    expired_keys = [k for k, v in cache.items() if datetime.fromisoformat(v['timestamp']) < expiration_date]
+    for key in expired_keys:
+        del cache[key]
+    if expired_keys:
+        save_cache()
+
+# Hash a file
+def calculate_hash(file_path):
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(8192):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+# Check the local cache before cloud scan
+def check_local_cache(file_hash):
+    clean_expired_cache()
+    if file_hash in cache:
+        entry = cache[file_hash]
+        print(f"[CACHE] {entry['result']} - {entry['timestamp']}")
+        return entry['result']
+    return None
     
-# Send file to cloud API for scanning
+# Send file to cloud API if not in cache
 def scan_file_with_cloud_api(file_path):
+    file_hash = calculate_hash(file_path)
+
+    # Check local cache first
+    cached_result = check_local_cache(file_hash)
+    if cached_result:
+        return cached_result, file_path
+
     try:
         with open(file_path, 'rb') as file:
             files = {'file': file}
+            if sys.stdout:
+                print("Uploading {file_path} to cloud...")
             response = requests.post(CLOUD_API_URL, files=files)
             if response.status_code == 200:
-                result = response.json()  # Assuming the response is in JSON format
-                if result.get('threat_detected'):
-                    print(f"Threat detected: {result['threat_name']} in {file_path}")
-                    return result['threat_name'], file_path
-                else:
-                    print(f"No threat detected in {file_path}")
-                    return None, None
+                result = response.json()
+                scan_result = result.get('threat_name', 'clean')
+
+                # Cache the result
+                cache[file_hash] = {
+                    "result": scan_result,
+                    "timestamp": datetime.now().isoformat()
+                }
+                save_cache()
+
+                if sys.stdout:
+                    print(f"[CLOUD] Threat detected: {scan_result} in {file_path}")
+                return scan_result, file_path
             else:
-                print(f"Error scanning file with cloud API. HTTP Status Code: {response.status_code}")
+                if sys.stdout:
+                    print(f"Error scanning file. Status: {response.status_code}")
                 return None, None
     except requests.exceptions.RequestException as e:
-        print(f"Error accessing cloud API: {e}")
+        if sys.stdout:
+            print(f"Error accessing cloud API: {e}")
         return None, None
 
 def check_threat_cloud(file_path):
     try:
         with open(file_path, 'rb') as file:
             files = {'file': file}
-            print(f"Sending file {file_path} to cloud API...")
+            if sys.stdout:
+                print(f"Sending file {file_path} to cloud API...")
             
             response = requests.post(CLOUD_API_URL, files=files)
             
-            print(f"Cloud API response: {response.status_code}, {response.text}")
+            if sys.stdout:
+                print(f"Cloud API response: {response.status_code}, {response.text}")
             
             if response.status_code == 200:
                 data = response.json()
                 if "threat_detected" in data and data["threat_detected"]:
-                    print(f"Threat detected (cloud): {data['threat_name']}")
+                    if sys.stdout:
+                        print(f"Threat detected (cloud): {data['threat_name']}")
                     return data["threat_name"], file_path
                 else:
-                    print(f"No threat detected for: {file_path}")
+                    if sys.stdout:
+                        print(f"No threat detected for: {file_path}")
                     return None, None
             else:
-                print(f"Error from cloud API: {response.status_code} - {response.text}")
+                if sys.stdout:
+                    print(f"Error from cloud API: {response.status_code} - {response.text}")
                 return None, None
     
     except Exception as e:
-        print(f"Error accessing cloud API: {e}")
+        if sys.stdout:
+            print(f"Error accessing cloud API: {e}")
         return None, None
 
-# Modified function to check both cloud and local database for threats
+# Check both local database and cloud for threats
 def check_threat(file_hash, file_path, threat_db):
-    if not threat_db:  # If threat_db is empty (database unavailable)
-        print("No database available to check threats.")
-        return None, None
+    cached_result = check_local_cache(file_hash)
+    if cached_result:
+        return cached_result, file_hash
+
+    # Check local database
+    for entry in threat_db:
+        if 'hashes' in entry and file_hash in entry['hashes']:
+            print(f"[LOCAL DB] Threat detected: {entry['name']} in {file_path}")
+        
+            # Cache the result if detected from the local database
+            cache[file_hash] = {
+                "result": entry['name'],
+                "timestamp": datetime.now().isoformat()
+            }
+            save_cache()  # Save the cache file after updating it
+            return entry['name'], file_hash
+
+    # If not found locally, check cloud
+    threat_name, found_hash = scan_file_with_cloud_api(file_path)
+    return threat_name, found_hash
     
     # First, check with the cloud API
     threat_name, found_hash = check_threat_cloud(file_path)
@@ -250,13 +311,8 @@ def check_threat(file_hash, file_path, threat_db):
         # If a threat is found in the cloud, return the result
         return threat_name, found_hash
     
-    # If no cloud threat is found, check the local database
-    for entry in threat_db:
-        if 'hashes' in entry and file_hash in entry['hashes']:
-            print(f"Threat detected (local database): {file_path} (hash match) - {entry['name']}")
-            return entry['name'], file_hash  # Return the threat name and file hash
-    
-    print(f"No threat detected for: {file_path}")
+    if sys.stdout:
+        print(f"No threat detected for: {file_path}")
     return None, None
 
 # Hash a file
@@ -271,10 +327,12 @@ def hash_file(file_path):
                 sha256.update(chunk)
         return sha256.hexdigest()
     except PermissionError:
-        print(f"Permission denied: {file_path}")
+        if sys.stdout:
+            print(f"Permission denied: {file_path}")
         return None  # Return None if file can't be accessed
     except Exception as e:
-        print(f"Error processing file {file_path}: {e}")
+        if sys.stdout:
+            print(f"Error processing file {file_path}: {e}")
         return None  # Handle any other exceptions
 
 # Scan a directory for threats
@@ -283,29 +341,27 @@ def scan_directory(path, threat_db, results_widget, progress_var, progress_label
     total_files = sum([len(files) for _, _, files in os.walk(path)])
     scanned_files = 0
 
-    if os.path.isfile(path):  # If it's a file
-        file_hash = hash_file(path)
-        file_name, hash_found = check_threat(file_hash, path, threat_db)
-        if hash_found or file_name:
-            threats_found.append((path, file_hash, file_name, hash_found))
+    if os.path.isfile(path):  # If it's a single file
+        file_hash = calculate_hash(path)
+        threat_name, hash_found = check_threat(file_hash, path, threat_db)
+        if threat_name and threat_name != 'clean':
+            threats_found.append((path, file_hash, threat_name, hash_found))
         scanned_files += 1
-        # Update the current file label
         current_file_label.config(text=f"Currently scanning: {path}")
-        # Update the progress bar for single file scan
         progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
 
     elif os.path.isdir(path):  # If it's a directory
         for root, dirs, files in os.walk(path):
             for file in files:
                 file_path = os.path.join(root, file)
-                file_hash = hash_file(file_path)
-                file_name, hash_found = check_threat(file_hash, file_path, threat_db)
-                if hash_found or file_name:
-                    threats_found.append((file_path, file_hash, file_name, hash_found))  # Append each detected threat
+                file_hash = calculate_hash(file_path)
+                threat_name, hash_found = check_threat(file_hash, file_path, threat_db)
+                
+                if threat_name and threat_name != 'clean':
+                    threats_found.append((file_path, file_hash, threat_name, hash_found))
                 scanned_files += 1
-                # Update the current file label
+
                 current_file_label.config(text=f"Currently scanning: {file_path}")
-                # Update the progress bar after scanning each file
                 progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
 
     return threats_found
@@ -323,11 +379,11 @@ class AntivirusGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Kybero Antivirus")
-        self.root.geometry("700x600")  # Increase the window size to accommodate logs
+        self.root.geometry("700x480")  # Increase the window size to accommodate logs
         
         # Center the window
         window_width = 700
-        window_height = 600
+        window_height = 480
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         position_top = int(screen_height / 2 - window_height / 2)
@@ -338,15 +394,17 @@ class AntivirusGUI:
         self.title_label = ttk.Label(self.root, text="Kybero Antivirus", font=("Helvetica", 16))
         self.title_label.pack(pady=10)
 
-        # Scan button
-        self.scan_button = ttk.Button(self.root, text="Select File or Folder to Scan", command=self.select_file_or_folder, state=tk.NORMAL)
-        self.scan_button.pack(pady=10)
+        button_frame = ttk.Frame(self.root)
+        button_frame.pack(pady=10)
         
-        self.quarantine_button = ttk.Button(self.root, text="Manage Quarantine", command=self.manage_quarantine)
-        self.quarantine_button.pack(pady=10)
+        self.scan_button = ttk.Button(button_frame, text="Scan File or Folder", command=self.select_file_or_folder, state=tk.NORMAL)
+        self.scan_button.pack(side=tk.LEFT, padx=5)
         
-        self.take_action_button = ttk.Button(self.root, text="Take Action", command=self.open_action_window, state=tk.DISABLED)
-        self.take_action_button.pack(pady=10)
+        self.quarantine_button = ttk.Button(button_frame, text="Manage Quarantine", command=self.manage_quarantine)
+        self.quarantine_button.pack(side=tk.LEFT, padx=5)
+        
+        self.take_action_button = ttk.Button(button_frame, text="Take Action", command=self.open_action_window, state=tk.DISABLED)
+        self.take_action_button.pack(side=tk.LEFT, padx=5)
 
         # Results area
         self.results_label = ttk.Label(self.root, text="Scan Results:")
@@ -532,6 +590,14 @@ class WelcomeWindow:
 
 
 if __name__ == "__main__":
+    # script_name = "KyberoAVbg.py"
+    
+    # if is_component_running(script_name):
+    #     print("Component is already running. Exiting...")
+    #     sys.exit(0)
+    # else:
+    #     run_in_background(script_name)
+    
     # Create the welcome window
     root = tk.Tk()
     welcome_window = WelcomeWindow(root)
