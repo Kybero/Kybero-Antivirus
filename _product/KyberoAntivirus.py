@@ -469,6 +469,7 @@ class AntivirusGUI(tk.Tk):
 * Added background processes allowing real-time protection
 * Added system notifications
 * Added file caching to significantly improve scan speeds (up to 98%!)
+* Redesigned UI
 * Improved database algorithm
 * Bug fixes
 """
