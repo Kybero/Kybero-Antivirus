@@ -12,6 +12,7 @@ from tkinter import ttk, messagebox
 from tkinter import filedialog
 import threading
 from datetime import datetime, timedelta
+import plyer
 
 # Configure logging
 log_file = "log.txt"
@@ -55,13 +56,21 @@ def handle_error(error):
     traceback.print_exc(file=sys.stdout)  # Log the full traceback to the file and console
 
     input("Press Enter to exit...")  # Pause before closing
+    
+def send_notification(title, message):
+    plyer.notification.notify(
+        title=title,
+        message=message,
+        app_name='Kybero Antivirus',
+        timeout=10
+    )
 
 # Antivirus version
 KYBERO_VERSION = "prototype 0.2.0 stable"
 
 # Configurations
 DB_PATH = os.path.join(os.path.dirname(__file__), 'db', 'threat_db.txt')
-GITHUB_API_URL = "https://github.com/Kybero/Kybero-Antivirus/blob/main/dev/db/threat_db.txt?raw=true"
+GITHUB_API_URL = "https://github.com/Kybero/Kybero-Control/blob/main/hash/hash.txt?raw=true"
 CLOUD_API_URL = "https://kybero-control.onrender.com/scan"  # Replace with your cloud API URL
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "cache.json")
 CACHE_EXPIRATION_DAYS = 30
@@ -156,7 +165,7 @@ def check_and_update_threat_db():
         with open(DB_PATH, 'wb') as file:
             file.write(remote_db_content)
         if sys.stdout:
-            print("Database updated successfully at: {DB_PATH}")
+            print(f"Database updated successfully at: {DB_PATH}")
 
     except requests.exceptions.RequestException as e:
         if sys.stdout:
@@ -166,13 +175,17 @@ def check_and_update_threat_db():
 # Load threat database (processing each line to extract relevant data)
 def load_threat_db():
     global threat_db  # Ensure the function updates the global variable
+    threat_db = {}  # Initialize an empty dictionary
     try:
         check_and_update_threat_db()
         if sys.stdout:
             print("Threat database loaded successfully.")
         with open(DB_PATH, 'r') as db_file:
-            # Assume the file contains JSON data
-            threat_db = json.load(db_file)
+            for line in db_file:
+                # Split by '...' to separate the threat name and hash
+                if ' ... ' in line:
+                    threat, hash_value = line.strip().split(' ... ', 1)
+                    threat_db[threat.strip()] = hash_value.strip()
             if sys.stdout:
                 print("Loaded threat database content.")
     except Exception as e:
@@ -250,38 +263,6 @@ def scan_file_with_cloud_api(file_path):
             print(f"Error accessing cloud API: {e}")
         return None, None
 
-def check_threat_cloud(file_path):
-    try:
-        with open(file_path, 'rb') as file:
-            files = {'file': file}
-            if sys.stdout:
-                print(f"Sending file {file_path} to cloud API...")
-            
-            response = requests.post(CLOUD_API_URL, files=files)
-            
-            if sys.stdout:
-                print(f"Cloud API response: {response.status_code}, {response.text}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                if "threat_detected" in data and data["threat_detected"]:
-                    if sys.stdout:
-                        print(f"Threat detected (cloud): {data['threat_name']}")
-                    return data["threat_name"], file_path
-                else:
-                    if sys.stdout:
-                        print(f"No threat detected for: {file_path}")
-                    return None, None
-            else:
-                if sys.stdout:
-                    print(f"Error from cloud API: {response.status_code} - {response.text}")
-                return None, None
-    
-    except Exception as e:
-        if sys.stdout:
-            print(f"Error accessing cloud API: {e}")
-        return None, None
-
 # Check both local database and cloud for threats
 def check_threat(file_hash, file_path, threat_db):
     cached_result = check_local_cache(file_hash)
@@ -304,12 +285,6 @@ def check_threat(file_hash, file_path, threat_db):
     # If not found locally, check cloud
     threat_name, found_hash = scan_file_with_cloud_api(file_path)
     return threat_name, found_hash
-    
-    # First, check with the cloud API
-    threat_name, found_hash = check_threat_cloud(file_path)
-    if threat_name:
-        # If a threat is found in the cloud, return the result
-        return threat_name, found_hash
     
     if sys.stdout:
         print(f"No threat detected for: {file_path}")
@@ -342,18 +317,19 @@ def scan_directory(path, threat_db, results_widget, progress_var, progress_label
     scanned_files = 0
 
     if os.path.isfile(path):  # If it's a single file
+        current_file_label.config(text=f"Currently scanning: {path}")
         file_hash = calculate_hash(path)
         threat_name, hash_found = check_threat(file_hash, path, threat_db)
         if threat_name and threat_name != 'clean':
             threats_found.append((path, file_hash, threat_name, hash_found))
         scanned_files += 1
-        current_file_label.config(text=f"Currently scanning: {path}")
         progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
 
     elif os.path.isdir(path):  # If it's a directory
         for root, dirs, files in os.walk(path):
             for file in files:
                 file_path = os.path.join(root, file)
+                current_file_label.config(text=f"Currently scanning: {file_path}")
                 file_hash = calculate_hash(file_path)
                 threat_name, hash_found = check_threat(file_hash, file_path, threat_db)
                 
@@ -361,9 +337,9 @@ def scan_directory(path, threat_db, results_widget, progress_var, progress_label
                     threats_found.append((file_path, file_hash, threat_name, hash_found))
                 scanned_files += 1
 
-                current_file_label.config(text=f"Currently scanning: {file_path}")
                 progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
 
+    send_notification("Kybero | Scan complete", "See the results in the Kybero Antivirus program.")
     return threats_found
 
 def update_progress(progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar):
@@ -405,6 +381,9 @@ class AntivirusGUI:
         
         self.take_action_button = ttk.Button(button_frame, text="Take Action", command=self.open_action_window, state=tk.DISABLED)
         self.take_action_button.pack(side=tk.LEFT, padx=5)
+        
+        self.changelog_button = ttk.Button(button_frame, text="Changelog", command=self.show_changelog)
+        self.changelog_button.pack(side=tk.LEFT, padx=5)
 
         # Results area
         self.results_label = ttk.Label(self.root, text="Scan Results:")
@@ -443,6 +422,28 @@ class AntivirusGUI:
     def load_database(self):
         global threat_db
         threat_db = load_threat_db()
+    
+    def show_changelog(self):
+        changelog_window = tk.Toplevel(self.root)
+        changelog_window.title("Changelog")
+        changelog_window.geometry("500x400")
+        
+        changelog_text = tk.Text(changelog_window, wrap="word")
+        changelog_text.pack(expand=True, fill="both", padx=10, pady=10)
+        
+        changelog_content = """Kybero Antivirus Changelog
+----------------------------
+prototype v0.2.0 stable - 2025-01-05
+
+* Added changelog option
+* Added background processes allowing real-time protection
+* Added system notifications
+* Added file caching to significantly improve scan speeds (up to 98%!)
+* Improved database algorithm
+"""
+        
+        changelog_text.insert("1.0", changelog_content)
+        changelog_text.config(state=tk.DISABLED)
         
     def manage_quarantine(self):
         # Ensure the quarantine directory exists
