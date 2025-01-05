@@ -13,6 +13,10 @@ from tkinter import filedialog
 import threading
 from datetime import datetime, timedelta
 import plyer
+from PIL import Image, ImageTk
+from io import BytesIO
+import time
+import queue
 
 # Configure logging
 log_file = "log.txt"
@@ -66,7 +70,8 @@ def send_notification(title, message):
     )
 
 # Antivirus version
-KYBERO_VERSION = "prototype 0.2.0 stable"
+KYBERO_VERSION = "alpha 0.2.0 stable"
+RELEASE_DATE = "2025-01-05"
 
 # Configurations
 DB_PATH = os.path.join(os.path.dirname(__file__), 'db', 'threat_db.txt')
@@ -238,7 +243,7 @@ def scan_file_with_cloud_api(file_path):
         with open(file_path, 'rb') as file:
             files = {'file': file}
             if sys.stdout:
-                print("Uploading {file_path} to cloud...")
+                print(f"Uploading {file_path} to cloud...")
             response = requests.post(CLOUD_API_URL, files=files)
             if response.status_code == 200:
                 result = response.json()
@@ -310,146 +315,168 @@ def hash_file(file_path):
             print(f"Error processing file {file_path}: {e}")
         return None  # Handle any other exceptions
 
-# Scan a directory for threats
-def scan_directory(path, threat_db, results_widget, progress_var, progress_label, progress_bar, current_file_label):
+def scan_directory(path, threat_db, results_widget, progress_var, progress_label, progress_bar, update_current_file_label_func, queue):
     threats_found = []
     total_files = sum([len(files) for _, _, files in os.walk(path)])
     scanned_files = 0
 
-    if os.path.isfile(path):  # If it's a single file
-        current_file_label.config(text=f"Currently scanning: {path}")
+    if os.path.isfile(path):
+        queue.put(('update_label', f"Currently scanning: {path}"))
         file_hash = calculate_hash(path)
         threat_name, hash_found = check_threat(file_hash, path, threat_db)
         if threat_name and threat_name != 'clean':
             threats_found.append((path, file_hash, threat_name, hash_found))
         scanned_files += 1
-        progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
+        queue.put(('update_progress', scanned_files, total_files))
 
-    elif os.path.isdir(path):  # If it's a directory
+    elif os.path.isdir(path):
         for root, dirs, files in os.walk(path):
             for file in files:
                 file_path = os.path.join(root, file)
-                current_file_label.config(text=f"Currently scanning: {file_path}")
+                queue.put(('update_label', f"Currently scanning: {file_path}"))
                 file_hash = calculate_hash(file_path)
                 threat_name, hash_found = check_threat(file_hash, file_path, threat_db)
-                
                 if threat_name and threat_name != 'clean':
                     threats_found.append((file_path, file_hash, threat_name, hash_found))
                 scanned_files += 1
+                queue.put(('update_progress', scanned_files, total_files))
 
-                progress_bar.after(0, update_progress, progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar)
-
-    send_notification("Kybero | Scan complete", "See the results in the Kybero Antivirus program.")
+    queue.put(('notify', "Kybero | Scan complete"))
     return threats_found
 
 def update_progress(progress_var, scanned_files, total_files, results_widget, progress_label, progress_bar):
-    # Check if the progress bar widget and window still exist before updating
     if progress_bar.winfo_exists() and results_widget.winfo_exists():
         progress = (scanned_files / total_files) * 100 if total_files > 0 else 0
         progress_var.set(progress)
         progress_label.config(text=f"{int(progress)}%")
-        results_widget.update_idletasks()  # Update the results widget (text area)
+        results_widget.update_idletasks()
 
-# GUI for the antivirus program
-class AntivirusGUI:
+def apply_gradient(window, color1, color2, width, height):
+    canvas = tk.Canvas(window, width=width, height=height)
+    canvas.place(relx=0.5, rely=0.5, anchor="center")
+    steps = height
+    for i in range(steps):
+        color = blend_colors(color1, color2, i / steps)
+        canvas.create_line(0, i, width, i, fill=color, width=1)
+
+def blend_colors(color1, color2, ratio):
+    r1, g1, b1 = [int(color1[i:i+2], 16) for i in (0, 2, 4)]
+    r2, g2, b2 = [int(color2[i:i+2], 16) for i in (0, 2, 4)]
+    r = int(r1 + (r2 - r1) * ratio)
+    g = int(g1 + (g2 - g1) * ratio)
+    b = int(b1 + (b2 - b1) * ratio)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+class AntivirusGUI(tk.Tk):
     def __init__(self, root):
-        self.root = root
-        self.root.title("Kybero Antivirus")
-        self.root.geometry("700x480")  # Increase the window size to accommodate logs
-        
-        # Center the window
+        super().__init__()
+
+        self.title("Kybero Antivirus")
+        self.geometry("700x480")
         window_width = 700
         window_height = 480
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
         position_top = int(screen_height / 2 - window_height / 2)
         position_left = int(screen_width / 2 - window_width / 2)
-        self.root.geometry(f'{window_width}x{window_height}+{position_left}+{position_top}')
-        
-        # Add title
-        self.title_label = ttk.Label(self.root, text="Kybero Antivirus", font=("Helvetica", 16))
-        self.title_label.pack(pady=10)
+        self.geometry(f'{window_width}x{window_height}+{position_left}+{position_top}')
 
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(pady=10)
-        
+        self.resizable(False, False)
+
+        # Create a canvas for gradient background and layout
+        self.canvas = tk.Canvas(self, width=window_width, height=window_height, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        # Apply gradient background on canvas
+        self.apply_gradient_canvas(self.canvas, color1="045775", color2="060475", width=window_width, height=window_height)
+
+        self.title_label = self.canvas.create_text(window_width // 2, 30, text="Kybero Antivirus", font=("Helvetica", 16), fill="white")
+
+        # Create the button frame and add it to the canvas
+        button_frame = tk.Frame(self.canvas, bg="")
+        self.canvas.create_window(window_width // 2, 70, window=button_frame)
+
         self.scan_button = ttk.Button(button_frame, text="Scan File or Folder", command=self.select_file_or_folder, state=tk.NORMAL)
         self.scan_button.pack(side=tk.LEFT, padx=5)
-        
+
         self.quarantine_button = ttk.Button(button_frame, text="Manage Quarantine", command=self.manage_quarantine)
         self.quarantine_button.pack(side=tk.LEFT, padx=5)
-        
+
         self.take_action_button = ttk.Button(button_frame, text="Take Action", command=self.open_action_window, state=tk.DISABLED)
         self.take_action_button.pack(side=tk.LEFT, padx=5)
-        
+
         self.changelog_button = ttk.Button(button_frame, text="Changelog", command=self.show_changelog)
         self.changelog_button.pack(side=tk.LEFT, padx=5)
 
-        # Results area
-        self.results_label = ttk.Label(self.root, text="Scan Results:")
-        self.results_label.pack(pady=5)
-        
-        self.results_text = tk.Text(self.root, height=10, width=70)  # Use tk.Text instead of ttk.Text
-        self.results_text.pack(pady=5)
+        self.results_label = self.canvas.create_text(window_width // 2, 140, text="Scan Results:", fill="white")
 
-        # Progress Bar
-        self.progress_label = ttk.Label(self.root, text="Scan Progress:")
-        self.progress_label.pack(pady=5)
+        self.results_text = tk.Text(self, height=10, width=70, highlightthickness=0, state=tk.DISABLED)
+        self.canvas.create_window(window_width // 2, 200, window=self.results_text)
 
-        self.progress_var = tk.DoubleVar()  # Use tk.DoubleVar() instead of ttk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(pady=5)
+        self.progress_label = self.canvas.create_text(window_width // 2, 310, text="Scan Progress:", fill="white")
 
-        # Percentage display
-        self.percentage_label = ttk.Label(self.root, text="0%")
-        self.percentage_label.pack(pady=5)
-        
-        # Current file label
-        self.current_file_label = ttk.Label(self.root, text="Currently scanning: None")
-        self.current_file_label.pack(pady=5)
-        
-        # Version label in bottom right
-        self.version_label = ttk.Label(self.root, text=f"Version: {KYBERO_VERSION}")
-        self.version_label.pack(side=tk.BOTTOM, anchor=tk.SE, padx=10, pady=10)
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(self, variable=self.progress_var, maximum=100)
+        self.canvas.create_window(window_width // 2, 330, window=self.progress_bar)
 
-        # Thread for loading database
+        self.percentage_label = self.canvas.create_text(window_width // 2, 360, text="0%", fill="white")
+
+        self.current_file_label = self.canvas.create_text(window_width // 2, 380, text="Currently scanning: None", fill="white")
+
+        self.version_label = self.canvas.create_text(window_width - 70, window_height - 20, text=f"Version: {KYBERO_VERSION}", fill="white")
+
         self.load_db_thread = threading.Thread(target=self.load_database, daemon=True)
         self.load_db_thread.start()
         
-        # To store detected threats
         self.detected_threats = []
+        
+        # Create a queue for thread-safe updates
+        self.update_queue = queue.Queue()
+        self.check_queue()
+        
+    def apply_gradient_canvas(self, canvas, color1, color2, width, height):
+        steps = height
+        for i in range(steps):
+            color = blend_colors(color1, color2, i / steps)
+            canvas.create_line(0, i, width, i, fill=color, width=1)
+        
+    def check_queue(self):
+        while not self.update_queue.empty():
+            update = self.update_queue.get() 
+            if update[0] == "update_file_label":
+                self.current_file_label.config(text=f"Currently scanning: {update[1]}")
+            elif update[0] == "scan_complete":
+                self.display_results(update[1])
+        self.after(100, self.check_queue) # Check the queue every 100ms
 
     def load_database(self):
         global threat_db
         threat_db = load_threat_db()
     
     def show_changelog(self):
-        changelog_window = tk.Toplevel(self.root)
+        changelog_window = tk.Toplevel(self)
         changelog_window.title("Changelog")
         changelog_window.geometry("500x400")
         
         changelog_text = tk.Text(changelog_window, wrap="word")
         changelog_text.pack(expand=True, fill="both", padx=10, pady=10)
         
-        changelog_content = """Kybero Antivirus Changelog
+        changelog_content = f"""Kybero Antivirus Changelog
 ----------------------------
-prototype v0.2.0 stable - 2025-01-05
+{KYBERO_VERSION} - {RELEASE_DATE}
 
 * Added changelog option
 * Added background processes allowing real-time protection
 * Added system notifications
 * Added file caching to significantly improve scan speeds (up to 98%!)
 * Improved database algorithm
+* Bug fixes
 """
-        
         changelog_text.insert("1.0", changelog_content)
         changelog_text.config(state=tk.DISABLED)
         
     def manage_quarantine(self):
-        # Ensure the quarantine directory exists
         os.makedirs(QUARANTINE_DIR, exist_ok=True)
-        
-        # Open the quarantine folder
         os.startfile(QUARANTINE_DIR)
     
     def select_file_or_folder(self):
@@ -457,10 +484,10 @@ prototype v0.2.0 stable - 2025-01-05
         user_choice = tk.messagebox.askquestion("Select File or Folder", "Do you want to scan a file?", icon='question')
     
         if user_choice == 'yes':
-            file_path = filedialog.askopenfilename(title="Select a file to scan")
-            if file_path:
+            path = filedialog.askopenfilename(title="Select a file to scan")
+            if path:
                 # Run the scan in a separate thread to avoid blocking the GUI
-                scanning_thread = threading.Thread(target=self.run_scan, args=(file_path,), daemon=True)
+                scanning_thread = threading.Thread(target=self.run_scan, args=(path,), daemon=True)
                 scanning_thread.start()
         else:
             folder_path = filedialog.askdirectory(title="Select a folder to scan")
@@ -468,12 +495,20 @@ prototype v0.2.0 stable - 2025-01-05
                 # Run the scan in a separate thread to avoid blocking the GUI
                 scanning_thread = threading.Thread(target=self.run_scan, args=(folder_path,), daemon=True)
                 scanning_thread.start()
-
+    
     def run_scan(self, path):
-        threats = scan_directory(path, threat_db, self.results_text, self.progress_var, self.percentage_label, self.progress_bar, self.current_file_label)
-        self.display_results(threats)
-
+        def scan():
+            threats = scan_directory(path, threat_db, self.results_text, self.progress_var, self.percentage_label, self.progress_bar, self.update_current_file_label_func, self.update_queue)
+            self.update_queue.put(("scan_complete", threats))  # Put the results in the queue
+    
+        scanning_thread = threading.Thread(target=scan, daemon=True)
+        scanning_thread.start()
+    
+    def update_current_file_label_func(self, text): 
+        self.update_queue.put(("update_file_label", text))
+    
     def display_results(self, threats):
+        self.results_text.config(state=tk.NORMAL)
         self.results_text.delete(1.0, tk.END)  # Clear existing text
         self.detected_threats = threats  # Store the detected threats
         if threats:
@@ -484,10 +519,11 @@ prototype v0.2.0 stable - 2025-01-05
         else:
             self.results_text.insert(tk.END, "No threats detected.\n")
             self.take_action_button.config(state=tk.DISABLED)  # Disable the button if no threats
+        self.results_text.config(state=tk.DISABLED)
             
     def open_action_window(self):
         if self.detected_threats:
-            action_window = tk.Toplevel(self.root)
+            action_window = tk.Toplevel(self)
             action_window.title("Take Action")
             action_window.geometry("400x300")
             action_label = ttk.Label(action_window, text="Choose action for detected threats:")
@@ -545,50 +581,98 @@ prototype v0.2.0 stable - 2025-01-05
     def ignore_threat(self, file_path):
         messagebox.showinfo("Ignored", f"The file {file_path} has been ignored.")
 
-# Welcome window with loading bar
-class WelcomeWindow:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Kybero Antivirus - Loading")
-        self.root.geometry("400x130")
+class WelcomeWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("Kybero Antivirus")
         
+        width = 400
+        height = 350
+
         # Center the welcome window
-        window_width = 400
-        window_height = 130
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        position_top = int(screen_height / 2 - window_height / 2)
-        position_left = int(screen_width / 2 - window_width / 2)
-        self.root.geometry(f'{window_width}x{window_height}+{position_left}+{position_top}')
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        position_top = int(screen_height / 2 - height / 2)
+        position_left = int(screen_width / 2 - width / 2)
+        self.geometry(f'{width}x{height}+{position_left}+{position_top}')
         
-        # Welcome message
-        self.welcome_label = ttk.Label(self.root, text="Welcome to Kybero Antivirus!", font=("Helvetica", 14))
-        self.welcome_label.pack(pady=20)
+        self.resizable(False, False)
+
+        # Create a canvas for gradient background and image
+        self.canvas = tk.Canvas(self, width=width, height=height, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        # Apply gradient background on canvas
+        self.apply_gradient_canvas(self.canvas, color1="045775", color2="060475", width=width, height=height)
+
+        # Load logo image
+        github_image_url = 'https://raw.githubusercontent.com/Kybero/Kybero-Antivirus/refs/heads/main/assets/logo.png'
+        response = requests.get(github_image_url)
+        image_data = Image.open(BytesIO(response.content))
+
+        # Ensure image has an alpha channel (transparency)
+        image_data = image_data.convert("RGBA")
+
+        # Remove white background (turn white pixels to transparent)
+        datas = image_data.getdata()
+
+        new_data = []
+        for item in datas:
+            # Change all white (also shades of whites) pixels to transparent
+            if item[:3] == (255, 255, 255):
+                new_data.append((255, 255, 255, 0))
+            else:
+                new_data.append(item)
+
+        image_data.putdata(new_data)
+
+        # Resize the image to fit within the desired dimensions
+        new_width = 200
+        new_height = 200
+        image_data = image_data.resize((new_width, new_height), Image.LANCZOS)
+
+        # Convert image to a format compatible with Tkinter
+        self.photo = ImageTk.PhotoImage(image_data)  # Keep a reference to avoid garbage collection
+
+        # Create the image label without background
+        self.canvas.create_image(width // 2, height // 2 - 50, image=self.photo, anchor="center")
+
+        # Create a frame for the progress bar
+        self.progress_frame = tk.Frame(self, bg="")
+        self.progress_frame.place(relx=0.5, rely=0.8, anchor="center")
 
         # Progress bar for loading
-        self.progress_bar = ttk.Progressbar(self.root, orient="horizontal", length=300, mode="indeterminate")
-        self.progress_bar.pack(pady=10)
+        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", length=200, mode="indeterminate")
+        self.progress_bar.pack()
         self.progress_bar.start()
 
         # Start loading in background thread
         self.load_thread = threading.Thread(target=self.start_main_window, daemon=True)
         self.load_thread.start()
 
+    def apply_gradient_canvas(self, canvas, color1, color2, width, height):
+        steps = height
+        for i in range(steps):
+            color = blend_colors(color1, color2, i / steps)
+            canvas.create_line(0, i, width, i, fill=color, width=1)
+
     def start_main_window(self):
         # Simulate loading process
-        import time
         time.sleep(3)  # Simulate loading for 3 seconds
 
         # After loading, switch to the main window
-        self.root.after(0, self.open_main_window)
+        self.after(0, self.open_main_window)
 
     def open_main_window(self):
-        # Destroy the welcome window and open the main window
-        self.root.destroy()
-        main_root = tk.Tk()
-        AntivirusGUI(main_root)
-        main_root.mainloop()
+        # Create a new Toplevel window (instead of Tk)
+        main_window = tk.Toplevel(self)
+        
+        # Initialize the main GUI
+        AntivirusGUI(main_window)
 
+        # Close the welcome window
+        self.destroy()
 
 if __name__ == "__main__":
     # script_name = "KyberoAVbg.py"
@@ -600,6 +684,5 @@ if __name__ == "__main__":
     #     run_in_background(script_name)
     
     # Create the welcome window
-    root = tk.Tk()
-    welcome_window = WelcomeWindow(root)
-    root.mainloop()
+    welcome_window = WelcomeWindow()
+    welcome_window.mainloop()
